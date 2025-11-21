@@ -71,6 +71,8 @@ func (c *Compiler) quoteIdent(ident string) string {
 
 func (c *Compiler) quote(x string) string {
 	switch c.conf.Engine {
+	case config.EngineClickHouse:
+		return "`" + x + "`"
 	case config.EngineMySQL:
 		return "`" + x + "`"
 	default:
