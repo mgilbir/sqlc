@@ -12,6 +12,7 @@ import (
 	"github.com/sqlc-dev/sqlc/internal/engine/postgresql"
 	pganalyze "github.com/sqlc-dev/sqlc/internal/engine/postgresql/analyzer"
 	"github.com/sqlc-dev/sqlc/internal/engine/sqlite"
+	sqliteanalyze "github.com/sqlc-dev/sqlc/internal/engine/sqlite/analyzer"
 	"github.com/sqlc-dev/sqlc/internal/opts"
 	"github.com/sqlc-dev/sqlc/internal/sql/ast"
 	"github.com/sqlc-dev/sqlc/internal/sql/catalog"
@@ -51,6 +52,15 @@ func NewCompiler(conf config.SQL, combo config.CombinedSettings) (*Compiler, err
 		c.parser = sqlite.NewParser()
 		c.catalog = sqlite.NewCatalog()
 		c.selector = newSQLiteSelector()
+		if conf.Database != nil {
+			if conf.Analyzer.Database == nil || *conf.Analyzer.Database {
+				c.analyzer = analyzer.Cached(
+					sqliteanalyze.New(*conf.Database),
+					combo.Global,
+					*conf.Database,
+				)
+			}
+		}
 	case config.EngineMySQL:
 		c.parser = dolphin.NewParser()
 		c.catalog = dolphin.NewCatalog()

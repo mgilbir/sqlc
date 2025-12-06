@@ -175,6 +175,10 @@ func TestReplay(t *testing.T) {
 								Managed: true,
 							}
 						case config.EngineClickHouse:
+              c.SQL[i].Database = &config.Database{
+								Managed: true,
+							}
+						case config.EngineSQLite:
 							c.SQL[i].Database = &config.Database{
 								Managed: true,
 							}
