@@ -486,6 +486,8 @@ func findColumnForRef(ref *ast.ColumnRef, tables []*Table, targetList *ast.List)
 	}
 
 	var found int
+	var matchedTables []*Table
+	
 	for _, t := range tables {
 		if alias != "" && t.Rel.Name != alias {
 			continue
@@ -495,6 +497,7 @@ func findColumnForRef(ref *ast.ColumnRef, tables []*Table, targetList *ast.List)
 		for _, c := range t.Columns {
 			if c.Name == name {
 				found++
+				matchedTables = append(matchedTables, t)
 				break
 			}
 		}
@@ -520,13 +523,27 @@ func findColumnForRef(ref *ast.ColumnRef, tables []*Table, targetList *ast.List)
 			Location: ref.Location,
 		}
 	}
-	if found > 1 {
-		return &sqlerr.Error{
-			Code:     "42703",
-			Message:  fmt.Sprintf("column reference %q is ambiguous", name),
-			Location: ref.Location,
+	
+	// Only report ambiguity if an unqualified column matches multiple DIFFERENT TABLES
+	// For qualified references (with table alias), they're already scoped so never ambiguous
+	if found > 1 && alias == "" && len(matchedTables) > 1 {
+		// Check if the matches are actually from different tables
+		// Count unique table names to handle potential duplicates
+		uniqueTables := make(map[string]bool)
+		for _, t := range matchedTables {
+			uniqueTables[t.Rel.Name] = true
+		}
+		// Only report ambiguity if column exists in 2+ different tables
+		if len(uniqueTables) > 1 {
+			return &sqlerr.Error{
+				Code:     "42703",
+				Message:  fmt.Sprintf("column reference %q is ambiguous", name),
+				Location: ref.Location,
+			}
 		}
 	}
+	// Note: If found > 1 but all from target list or same table, it's not ambiguous
+	// If len(matchedTables) <= 1, then either no table match but target list match, or one table match
 
 	return nil
 }
