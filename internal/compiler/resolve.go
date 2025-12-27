@@ -185,6 +185,11 @@ func (comp *Compiler) resolveCatalogRefs(qc *QueryCatalog, stmt ast.Node, rvs []
 				continue
 			}
 
+			// Variables to track found column across switch cases
+			var columnForParam *catalog.Column
+			var paramTable *ast.TableName
+			var columnKey string
+
 			switch node := list.Items[0].(type) {
 			case *ast.ColumnRef:
 				items := stringSlice(node.Fields)
@@ -202,6 +207,7 @@ func (comp *Compiler) resolveCatalogRefs(qc *QueryCatalog, stmt ast.Node, rvs []
 				default:
 					panic("too many field items: " + strconv.Itoa(len(items)))
 				}
+				columnKey = key
 
 				// Filter search tables to only those visible from this parameter's context.
 				// If the parameter has visibleTableVars (from its containing SELECT's FROM clause),
@@ -261,6 +267,7 @@ func (comp *Compiler) resolveCatalogRefs(qc *QueryCatalog, stmt ast.Node, rvs []
 
 				var found int
 				var foundTables []*ast.TableName
+				
 				for _, table := range search {
 					schema := table.Schema
 					if schema == "" {
@@ -269,28 +276,11 @@ func (comp *Compiler) resolveCatalogRefs(qc *QueryCatalog, stmt ast.Node, rvs []
 					if c, ok := typeMap[schema][table.Name][key]; ok {
 						found += 1
 						foundTables = append(foundTables, table)
-						if ref.name != "" {
-							key = ref.name
+						// Store the first found column for later use
+						if columnForParam == nil {
+							columnForParam = c
+							paramTable = table
 						}
-
-						defaultP := named.NewInferredParam(key, c.IsNotNull)
-						p, isNamed := params.FetchMerge(ref.ref.Number, defaultP)
-						a = append(a, Parameter{
-							Number: ref.ref.Number,
-							Column: &Column{
-								Name:         p.Name(),
-								OriginalName: c.Name,
-								DataType:     dataType(&c.Type),
-								NotNull:      p.NotNull(),
-								Unsigned:     c.IsUnsigned,
-								IsArray:      c.IsArray,
-								ArrayDims:    c.ArrayDims,
-								Length:       c.Length,
-								Table:        table,
-								IsNamedParam: isNamed,
-								IsSqlcSlice:  p.IsSqlcSlice(),
-							},
-						})
 					}
 				}
 
@@ -301,6 +291,9 @@ func (comp *Compiler) resolveCatalogRefs(qc *QueryCatalog, stmt ast.Node, rvs []
 						Location: node.Location,
 					}
 				}
+				
+				// Check if column is in a USING clause when found in multiple tables
+				isInUsingClause := false
 				if found > 1 && alias == "" {
 					// Check if all matches are from a USING clause - if so, not ambiguous
 					usingMap := getJoinUsingMap(stmt)
@@ -308,7 +301,6 @@ func (comp *Compiler) resolveCatalogRefs(qc *QueryCatalog, stmt ast.Node, rvs []
 					// Check if the column is in any USING clause
 					// If it is, then it's not ambiguous even if found in multiple tables
 					// (because USING deduplicates the column)
-					isInUsingClause := false
 					if len(usingMap) > 0 {
 						// If we have any USING clauses and the column matches the key,
 						// assume it's part of a USING deduplication
@@ -336,6 +328,32 @@ func (comp *Compiler) resolveCatalogRefs(qc *QueryCatalog, stmt ast.Node, rvs []
 						}
 					}
 				}
+			}
+			
+			// Now add the parameter (once) after checking for ambiguity
+			if columnForParam != nil {
+				paramName := columnKey
+				if ref.name != "" {
+					paramName = ref.name
+				}
+				
+				defaultP := named.NewInferredParam(paramName, columnForParam.IsNotNull)
+				p, isNamed := params.FetchMerge(ref.ref.Number, defaultP)
+				a = append(a, Parameter{
+					Number: ref.ref.Number,
+					Column: &Column{
+						Name:         p.Name(),
+						OriginalName: columnForParam.Name,
+						DataType:     dataType(&columnForParam.Type),
+						NotNull:      p.NotNull(),
+						Unsigned:     columnForParam.IsUnsigned,
+						IsArray:      columnForParam.IsArray,
+						ArrayDims:    columnForParam.ArrayDims,
+						Table:        paramTable,
+						IsNamedParam: isNamed,
+						IsSqlcSlice:  p.IsSqlcSlice(),
+					},
+				})
 			}
 
 		case *ast.BetweenExpr:

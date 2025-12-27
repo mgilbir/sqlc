@@ -502,6 +502,12 @@ func outputColumnRefsWithContext(res *ast.ResTarget, tables []*Table, node *ast.
 				Location: res.Location,
 			}
 		}
+		
+		// If column is in USING clause, return only the first matched column
+		// USING clauses deduplicate the column in the result set
+		if isInUsingClause {
+			return cols[:1], nil
+		}
 	}
 	return cols, nil
 }
