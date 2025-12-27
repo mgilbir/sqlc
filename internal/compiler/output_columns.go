@@ -71,7 +71,7 @@ func (c *Compiler) outputColumns(qc *QueryCatalog, node ast.Node) ([]*Column, er
 
 		if n.GroupClause != nil {
 			for _, item := range n.GroupClause.Items {
-				if err := findColumnForNode(item, tables, targets); err != nil {
+				if err := findColumnForNodeWithContext(item, tables, targets, node); err != nil {
 					return nil, err
 				}
 			}
@@ -87,7 +87,7 @@ func (c *Compiler) outputColumns(qc *QueryCatalog, node ast.Node) ([]*Column, er
 					if !ok {
 						continue
 					}
-					if err := findColumnForNode(sb.Node, tables, targets); err != nil {
+					if err := findColumnForNodeWithContext(sb.Node, tables, targets, node); err != nil {
 						return nil, fmt.Errorf("%v: if you want to skip this validation, set 'strict_order_by' to false", err)
 					}
 				}
@@ -103,7 +103,7 @@ func (c *Compiler) outputColumns(qc *QueryCatalog, node ast.Node) ([]*Column, er
 						if !ok {
 							continue
 						}
-						if err := findColumnForNode(caseExpr.Xpr, tables, targets); err != nil {
+						if err := findColumnForNodeWithContext(caseExpr.Xpr, tables, targets, node); err != nil {
 							return nil, fmt.Errorf("%v: if you want to skip this validation, set 'strict_order_by' to false", err)
 						}
 					}
@@ -414,6 +414,10 @@ func (c *Compiler) sourceTables(qc *QueryCatalog, node ast.Node) ([]*Table, erro
 }
 
 func outputColumnRefs(res *ast.ResTarget, tables []*Table, node *ast.ColumnRef) ([]*Column, error) {
+	return outputColumnRefsWithContext(res, tables, node, nil)
+}
+
+func outputColumnRefsWithContext(res *ast.ResTarget, tables []*Table, node *ast.ColumnRef, context ast.Node) ([]*Column, error) {
 	parts := stringSlice(node.Fields)
 	var schema, name, alias string
 	switch {
@@ -431,6 +435,7 @@ func outputColumnRefs(res *ast.ResTarget, tables []*Table, node *ast.ColumnRef) 
 	}
 	var cols []*Column
 	var found int
+	var matchedTables []*Table
 	for _, t := range tables {
 		if schema != "" && t.Rel.Schema != schema {
 			continue
@@ -442,6 +447,7 @@ func outputColumnRefs(res *ast.ResTarget, tables []*Table, node *ast.ColumnRef) 
 
 			if c.Name == name {
 				found += 1
+				matchedTables = append(matchedTables, t)
 				cname := c.Name
 				if res.Name != nil {
 					cname = *res.Name
@@ -471,10 +477,24 @@ func outputColumnRefs(res *ast.ResTarget, tables []*Table, node *ast.ColumnRef) 
 		}
 	}
 	if found > 1 {
-		return nil, &sqlerr.Error{
-			Code:     "42703",
-			Message:  fmt.Sprintf("column reference %q is ambiguous", name),
-			Location: res.Location,
+		// Check if column is in a USING clause - if so, it's not ambiguous
+		isInUsingClause := false
+		if context != nil {
+			usingMap := getJoinUsingMap(context)
+			for _, t := range matchedTables {
+				if info, ok := usingMap[t.Rel.Name]; ok && info.HasColumn(name) {
+					isInUsingClause = true
+					break
+				}
+			}
+		}
+		
+		if !isInUsingClause {
+			return nil, &sqlerr.Error{
+				Code:     "42703",
+				Message:  fmt.Sprintf("column reference %q is ambiguous", name),
+				Location: res.Location,
+			}
 		}
 	}
 	return cols, nil
@@ -486,6 +506,14 @@ func findColumnForNode(item ast.Node, tables []*Table, targetList *ast.List) err
 		return nil
 	}
 	return findColumnForRef(ref, tables, targetList)
+}
+
+func findColumnForNodeWithContext(item ast.Node, tables []*Table, targetList *ast.List, context ast.Node) error {
+	ref, ok := item.(*ast.ColumnRef)
+	if !ok {
+		return nil
+	}
+	return findColumnForRefWithContext(ref, tables, targetList, context)
 }
 
 func findColumnForRef(ref *ast.ColumnRef, tables []*Table, targetList *ast.List) error {
@@ -552,6 +580,95 @@ func findColumnForRef(ref *ast.ColumnRef, tables []*Table, targetList *ast.List)
 				Code:     "42703",
 				Message:  fmt.Sprintf("column reference %q is ambiguous", name),
 				Location: ref.Location,
+			}
+		}
+	}
+	// Note: If found > 1 but all from target list or same table, it's not ambiguous
+	// If len(matchedTables) <= 1, then either no table match but target list match, or one table match
+
+	return nil
+}
+
+func findColumnForRefWithContext(ref *ast.ColumnRef, tables []*Table, targetList *ast.List, context ast.Node) error {
+	parts := stringSlice(ref.Fields)
+	var alias, name string
+	if len(parts) == 1 {
+		name = parts[0]
+	} else if len(parts) == 2 {
+		alias = parts[0]
+		name = parts[1]
+	}
+
+	// Build map of USING columns to determine which columns are deduplicated in JOINs
+	usingMap := getJoinUsingMap(context)
+
+	var found int
+	var matchedTables []*Table
+	
+	for _, t := range tables {
+		if alias != "" && t.Rel.Name != alias {
+			continue
+		}
+
+		// Find matching column
+		for _, c := range t.Columns {
+			if c.Name == name {
+				found++
+				matchedTables = append(matchedTables, t)
+				break
+			}
+		}
+	}
+
+	// Find matching alias if necessary
+	if found == 0 {
+		for _, c := range targetList.Items {
+			resTarget, ok := c.(*ast.ResTarget)
+			if !ok {
+				continue
+			}
+			if resTarget.Name != nil && *resTarget.Name == name {
+				found++
+			}
+		}
+	}
+
+	if found == 0 {
+		return &sqlerr.Error{
+			Code:     "42703",
+			Message:  fmt.Sprintf("column reference %q not found", name),
+			Location: ref.Location,
+		}
+	}
+	
+	// Only report ambiguity if an unqualified column matches multiple DIFFERENT TABLES
+	// For qualified references (with table alias), they're already scoped so never ambiguous
+	// Also, if the column is in a USING clause of any join, it's not ambiguous (USING deduplicates)
+	if found > 1 && alias == "" && len(matchedTables) > 1 {
+		// Check if any of the matched tables have this column in a USING clause
+		isInUsingClause := false
+		for _, t := range matchedTables {
+			if info, ok := usingMap[t.Rel.Name]; ok && info.HasColumn(name) {
+				isInUsingClause = true
+				break
+			}
+		}
+
+		// If not in a USING clause, check for actual ambiguity from different tables
+		if !isInUsingClause {
+			// Check if the matches are actually from different tables
+			// Count unique table names to handle potential duplicates
+			uniqueTables := make(map[string]bool)
+			for _, t := range matchedTables {
+				uniqueTables[t.Rel.Name] = true
+			}
+			// Only report ambiguity if column exists in 2+ different tables
+			if len(uniqueTables) > 1 {
+				return &sqlerr.Error{
+					Code:     "42703",
+					Message:  fmt.Sprintf("column reference %q is ambiguous", name),
+					Location: ref.Location,
+				}
 			}
 		}
 	}
@@ -673,7 +790,7 @@ func (c *Compiler) resolveValue(res *ast.ResTarget, tables []*Table, qc *QueryCa
 				continue
 			}
 			if ref, ok := arg.(*ast.ColumnRef); ok {
-				columns, err := outputColumnRefs(res, tables, ref)
+				columns, err := outputColumnRefsWithContext(res, tables, ref, node)
 				if err != nil {
 					return nil, err
 				}
@@ -744,7 +861,7 @@ func (c *Compiler) resolveValue(res *ast.ResTarget, tables []*Table, qc *QueryCa
 			return cols, nil
 		}
 
-		columns, err := outputColumnRefs(res, tables, n)
+		columns, err := outputColumnRefsWithContext(res, tables, n, node)
 		if err != nil {
 			return nil, err
 		}
