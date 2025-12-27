@@ -67,7 +67,7 @@ type GetDepartmentsWithUsersRow struct {
 	UserCount uint64
 }
 
-// Multiple CTEs with unqualified GROUP BY columns
+// Multiple CTEs (qualified column references)
 func (q *Queries) GetDepartmentsWithUsers(ctx context.Context) ([]GetDepartmentsWithUsersRow, error) {
 	rows, err := q.db.QueryContext(ctx, getDepartmentsWithUsers)
 	if err != nil {

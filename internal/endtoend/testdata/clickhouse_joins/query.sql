@@ -46,7 +46,7 @@ RIGHT JOIN users u ON d.id = u.department_id
 GROUP BY d.id, d.name
 ORDER BY user_count DESC;
 
--- Multiple CTEs with unqualified GROUP BY columns
+-- Multiple CTEs (qualified column references)
 -- name: GetResourceStatus :many
 WITH current_status AS (
     SELECT department_id, COUNT(users.id) as user_count, MAX(users.id) as latest_id
