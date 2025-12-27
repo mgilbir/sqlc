@@ -58,6 +58,7 @@ FROM departments d
 RIGHT JOIN users u ON d.id = u.department_id
 GROUP BY d.id, d.name
 ORDER BY user_count DESC;
+
 `
 
 type GetDepartmentsWithUsersRow struct {
@@ -66,6 +67,7 @@ type GetDepartmentsWithUsersRow struct {
 	UserCount uint64
 }
 
+// Multiple CTEs with unqualified GROUP BY columns
 func (q *Queries) GetDepartmentsWithUsers(ctx context.Context) ([]GetDepartmentsWithUsersRow, error) {
 	rows, err := q.db.QueryContext(ctx, getDepartmentsWithUsers)
 	if err != nil {
@@ -76,6 +78,63 @@ func (q *Queries) GetDepartmentsWithUsers(ctx context.Context) ([]GetDepartments
 	for rows.Next() {
 		var i GetDepartmentsWithUsersRow
 		if err := rows.Scan(&i.ID, &i.Name, &i.UserCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getResourceStatus = `-- name: GetResourceStatus :many
+WITH current_status AS (
+    SELECT department_id, COUNT(users.id) as user_count, MAX(users.id) as latest_id
+    FROM users
+    WHERE users.id > ?
+    GROUP BY department_id
+),
+department_details AS (
+    SELECT departments.id, departments.name
+    FROM departments
+    WHERE departments.id IN (SELECT department_id FROM users WHERE users.id > ?)
+)
+SELECT
+    cs.department_id,
+    cs.user_count,
+    cs.latest_id,
+    dd.name as department_name
+FROM current_status cs
+LEFT JOIN department_details dd ON cs.department_id = dd.id
+ORDER BY cs.user_count DESC;
+`
+
+type GetResourceStatusRow struct {
+	DepartmentID   uint32
+	UserCount      uint64
+	LatestID       uint32
+	DepartmentName sql.NullString
+}
+
+func (q *Queries) GetResourceStatus(ctx context.Context, id uint32) ([]GetResourceStatusRow, error) {
+	rows, err := q.db.QueryContext(ctx, getResourceStatus, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetResourceStatusRow
+	for rows.Next() {
+		var i GetResourceStatusRow
+		if err := rows.Scan(
+			&i.DepartmentID,
+			&i.UserCount,
+			&i.LatestID,
+			&i.DepartmentName,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

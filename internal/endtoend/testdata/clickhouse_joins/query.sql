@@ -45,3 +45,25 @@ FROM departments d
 RIGHT JOIN users u ON d.id = u.department_id
 GROUP BY d.id, d.name
 ORDER BY user_count DESC;
+
+-- Multiple CTEs with unqualified GROUP BY columns
+-- name: GetResourceStatus :many
+WITH current_status AS (
+    SELECT department_id, COUNT(users.id) as user_count, MAX(users.id) as latest_id
+    FROM users
+    WHERE users.id > ?
+    GROUP BY department_id
+),
+department_details AS (
+    SELECT departments.id, departments.name
+    FROM departments
+    WHERE departments.id IN (SELECT department_id FROM users WHERE users.id > ?)
+)
+SELECT
+    cs.department_id,
+    cs.user_count,
+    cs.latest_id,
+    dd.name as department_name
+FROM current_status cs
+LEFT JOIN department_details dd ON cs.department_id = dd.id
+ORDER BY cs.user_count DESC;
