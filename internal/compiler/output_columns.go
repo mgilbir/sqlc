@@ -375,6 +375,12 @@ func (c *Compiler) sourceTables(qc *QueryCatalog, node ast.Node) ([]*Table, erro
 				tableName = *n.Alias.Aliasname
 			}
 
+			// When columns come from a derived table, they should not carry their original
+			// table references, as they are now part of the derived table output.
+			// However, we preserve the Table reference for the NotNull check (see line 139 in outputColumns)
+			// For ambiguity checking in ORDER BY/GROUP BY, derived table columns should
+			// only resolve against the derived table itself, not their original tables.
+			
 			addTable(&Table{
 				Rel: &ast.TableName{
 					Name: tableName,

@@ -21,7 +21,7 @@ func dataType(n *ast.TypeName) string {
 	}
 }
 
-func (comp *Compiler) resolveCatalogRefs(qc *QueryCatalog, rvs []*ast.RangeVar, args []paramRef, params *named.ParamSet, embeds rewrite.EmbedSet) ([]Parameter, error) {
+func (comp *Compiler) resolveCatalogRefs(qc *QueryCatalog, stmt ast.Node, rvs []*ast.RangeVar, args []paramRef, params *named.ParamSet, embeds rewrite.EmbedSet) ([]Parameter, error) {
 	c := comp.catalog
 
 	aliasMap := map[string]*ast.TableName{}
@@ -260,6 +260,7 @@ func (comp *Compiler) resolveCatalogRefs(qc *QueryCatalog, rvs []*ast.RangeVar, 
 				}
 
 				var found int
+				var foundTables []*ast.TableName
 				for _, table := range search {
 					schema := table.Schema
 					if schema == "" {
@@ -267,6 +268,7 @@ func (comp *Compiler) resolveCatalogRefs(qc *QueryCatalog, rvs []*ast.RangeVar, 
 					}
 					if c, ok := typeMap[schema][table.Name][key]; ok {
 						found += 1
+						foundTables = append(foundTables, table)
 						if ref.name != "" {
 							key = ref.name
 						}
@@ -299,11 +301,39 @@ func (comp *Compiler) resolveCatalogRefs(qc *QueryCatalog, rvs []*ast.RangeVar, 
 						Location: node.Location,
 					}
 				}
-				if found > 1 {
-					return nil, &sqlerr.Error{
-						Code:     "42703",
-						Message:  fmt.Sprintf("column reference %q is ambiguous", key),
-						Location: node.Location,
+				if found > 1 && alias == "" {
+					// Check if all matches are from a USING clause - if so, not ambiguous
+					usingMap := getJoinUsingMap(stmt)
+					
+					// Check if the column is in any USING clause
+					// If it is, then it's not ambiguous even if found in multiple tables
+					// (because USING deduplicates the column)
+					isInUsingClause := false
+					if len(usingMap) > 0 {
+						// If we have any USING clauses and the column matches the key,
+						// assume it's part of a USING deduplication
+						for _, info := range usingMap {
+							if info.HasColumn(key) {
+								isInUsingClause = true
+								break
+							}
+						}
+					}
+					
+					if !isInUsingClause {
+						// Check if the matches are actually from different tables
+						uniqueTables := make(map[string]bool)
+						for _, t := range foundTables {
+							uniqueTables[t.Name] = true
+						}
+						// Only report ambiguity if column exists in 2+ different tables
+						if len(uniqueTables) > 1 {
+							return nil, &sqlerr.Error{
+								Code:     "42703",
+								Message:  fmt.Sprintf("column reference %q is ambiguous", key),
+								Location: node.Location,
+							}
+						}
 					}
 				}
 			}

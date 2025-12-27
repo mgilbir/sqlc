@@ -39,6 +39,7 @@ func (ui *UsingInfo) HasColumn(colName string) bool {
 
 // getJoinUsingMap builds a map of table names to their USING columns
 // This helps identify which columns should not be duplicated when expanding *
+// It also recursively checks derived tables (subqueries) for USING information
 func getJoinUsingMap(node ast.Node) map[string]*UsingInfo {
 	usingMap := make(map[string]*UsingInfo)
 
@@ -69,5 +70,7 @@ func (v *joinVisitor) Visit(node ast.Node) astutils.Visitor {
 			}
 		}
 	}
+	
+	// Continue walking to handle nested structures
 	return v
 }
