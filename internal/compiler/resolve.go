@@ -203,7 +203,41 @@ func (comp *Compiler) resolveCatalogRefs(qc *QueryCatalog, rvs []*ast.RangeVar, 
 					panic("too many field items: " + strconv.Itoa(len(items)))
 				}
 
+				// Filter search tables to only those visible from this parameter's context.
+				// If the parameter has visibleTableVars (from its containing SELECT's FROM clause),
+				// use only those tables. This ensures that parameters in CTEs don't see tables
+				// from other CTEs, preventing false "ambiguous column" errors.
 				search := tables
+				
+				// First priority: use visibleTableVars if available (FROM clause context)
+				if len(ref.visibleTableVars) > 0 {
+					visibleSearch := make([]*ast.TableName, 0, len(ref.visibleTableVars))
+					visibleVarNames := make(map[string]bool)
+					for _, rv := range ref.visibleTableVars {
+						visibleVarNames[*rv.Relname] = true
+					}
+					// Find tables that match the visible RangeVars
+					for _, t := range tables {
+						if visibleVarNames[t.Name] {
+							visibleSearch = append(visibleSearch, t)
+						}
+					}
+					if len(visibleSearch) > 0 {
+						search = visibleSearch
+					}
+				} else if ref.rv != nil {
+					// Secondary priority: use ref.rv if no visibleTableVars
+					fqn, err := ParseTableName(ref.rv)
+					if err == nil {
+						// Find the matching table
+						for _, t := range tables {
+							if t.Name == fqn.Name {
+								search = []*ast.TableName{t}
+								break
+							}
+						}
+					}
+				}
 				if alias != "" {
 					if original, ok := aliasMap[alias]; ok {
 						search = []*ast.TableName{original}

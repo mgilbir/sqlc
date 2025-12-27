@@ -67,7 +67,7 @@ type GetDepartmentsWithUsersRow struct {
 	UserCount uint64
 }
 
-// Multiple CTEs (qualified column references)
+// Multiple CTEs (unqualified column references)
 func (q *Queries) GetDepartmentsWithUsers(ctx context.Context) ([]GetDepartmentsWithUsersRow, error) {
 	rows, err := q.db.QueryContext(ctx, getDepartmentsWithUsers)
 	if err != nil {
@@ -93,15 +93,15 @@ func (q *Queries) GetDepartmentsWithUsers(ctx context.Context) ([]GetDepartments
 
 const getResourceStatus = `-- name: GetResourceStatus :many
 WITH current_status AS (
-    SELECT department_id, COUNT(users.id) as user_count, MAX(users.id) as latest_id
+    SELECT department_id, COUNT(id) as user_count, MAX(id) as latest_id
     FROM users
-    WHERE users.id > ?
+    WHERE id > ?
     GROUP BY department_id
 ),
 department_details AS (
-    SELECT departments.id, departments.name
+    SELECT id, name
     FROM departments
-    WHERE departments.id IN (SELECT department_id FROM users WHERE users.id > ?)
+    WHERE id IN (SELECT department_id FROM users WHERE id > ?)
 )
 SELECT
     cs.department_id,

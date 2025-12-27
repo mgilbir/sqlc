@@ -24,6 +24,10 @@ type paramRef struct {
 	rv     *ast.RangeVar
 	ref    *ast.ParamRef
 	name   string // Named parameter support
+	// visibleTableVars tracks all RangeVars visible from this parameter's context
+	// (e.g., all tables in the FROM clause of the SELECT containing this parameter)
+	// This is used for better scoping of unqualified column references in CTEs
+	visibleTableVars []*ast.RangeVar
 }
 
 type paramSearch struct {
@@ -36,6 +40,10 @@ type paramSearch struct {
 	// XXX: Gross state hack for limit
 	limitCount  ast.Node
 	limitOffset ast.Node
+	
+	// Track RangeVars visible from the current FROM clause context
+	// This helps correctly associate parameters with their enclosing SELECT's tables
+	currentSelectRangeVars []*ast.RangeVar
 }
 
 type limitCount struct {
@@ -140,6 +148,17 @@ func (p paramSearch) Visit(node ast.Node) astutils.Visitor {
 		p.parent = node
 
 	case *ast.SelectStmt:
+		// When entering a SELECT, extract RangeVars from this SELECT's FROM clause
+		// These will be available for parameters in this SELECT's WHERE, GROUP BY, etc.
+		if n.FromClause != nil {
+			visitor := astutils.VisitorFunc(func(node ast.Node) {
+				if rv, ok := node.(*ast.RangeVar); ok {
+					p.currentSelectRangeVars = append(p.currentSelectRangeVars, rv)
+				}
+			})
+			astutils.Walk(visitor, n.FromClause)
+		}
+		
 		if n.LimitCount != nil {
 			p.limitCount = n.LimitCount
 		}
@@ -186,7 +205,12 @@ func (p paramSearch) Visit(node ast.Node) astutils.Visitor {
 		}
 
 		if set {
-			*p.refs = append(*p.refs, paramRef{parent: parent, ref: n, rv: p.rangeVar})
+			newRef := paramRef{parent: parent, ref: n, rv: p.rangeVar}
+			// If we're in a SELECT and have visible tables from its FROM clause, record them
+			if len(p.currentSelectRangeVars) > 0 {
+				newRef.visibleTableVars = append([]*ast.RangeVar{}, p.currentSelectRangeVars...)
+			}
+			*p.refs = append(*p.refs, newRef)
 			p.seen[n.Location] = struct{}{}
 		}
 		return nil
