@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
-	"os/exec"
-	"strings"
 	"time"
 
 	_ "github.com/ClickHouse/clickhouse-go/v2"
@@ -40,70 +38,54 @@ func StartClickHouseServer(c context.Context) (string, error) {
 }
 
 func startClickHouseServer(c context.Context) (string, error) {
-	{
-		_, err := exec.Command("docker", "pull", "clickhouse:lts").CombinedOutput()
-		if err != nil {
-			return "", fmt.Errorf("docker pull: clickhouse:lts %w", err)
+	// Try docker-compose ClickHouse first (standard port 9000)
+	// Try with and without credentials
+	dsns := []string{
+		"clickhouse://default:@localhost:9000/default",  // default user with empty password
+		"clickhouse://localhost:9000/default",            // no credentials
+	}
+
+	for _, dsn := range dsns {
+		if tryConnectClickHouse(c, dsn, 5*time.Second) {
+			slog.Info("found running docker-compose clickhouse", "dsn", dsn)
+			return dsn, nil
 		}
 	}
 
-	var exists bool
-	{
-		cmd := exec.Command("docker", "container", "inspect", "sqlc_sqltest_docker_clickhouse")
-		// This means we've already started the container
-		exists = cmd.Run() == nil
-	}
+	// If docker-compose ClickHouse is not available, return an error
+	// Don't try to start our own container - ports may be in use
+	return "", fmt.Errorf("clickhouse is not available on port 9000. Make sure docker-compose is running or start ClickHouse manually")
+}
 
-	if !exists {
-		cmd := exec.Command("docker", "run",
-			"--name", "sqlc_sqltest_docker_clickhouse",
-			"-p", "9000:9000",
-			"-p", "8123:8123",
-			"-e", "CLICKHOUSE_DB=default",
-			"-e", "CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1",
-			"-d",
-			"clickhouse:lts",
-		)
-
-		output, err := cmd.CombinedOutput()
-		fmt.Println(string(output))
-
-		msg := `Conflict. The container name "/sqlc_sqltest_docker_clickhouse" is already in use by container`
-		if !strings.Contains(string(output), msg) && err != nil {
-			return "", err
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(c, 10*time.Second)
+func tryConnectClickHouse(c context.Context, dsn string, timeout time.Duration) bool {
+	ctx, cancel := context.WithTimeout(c, timeout)
 	defer cancel()
 
-	// Create a ticker that fires every 10ms
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
-
-	// ClickHouse DSN format: clickhouse://host:port
-	dsn := "clickhouse://localhost:9000/default"
 
 	for {
 		select {
 		case <-ctx.Done():
-			return "", fmt.Errorf("timeout reached: %w", ctx.Err())
+			return false
 
 		case <-ticker.C:
 			db, err := sql.Open("clickhouse", dsn)
 			if err != nil {
-				slog.Debug("sqltest", "open", err)
+				slog.Debug("sqltest clickhouse open failed", "err", err)
 				continue
 			}
 
 			if err := db.PingContext(ctx); err != nil {
-				slog.Debug("sqltest", "ping", err)
+				slog.Debug("sqltest clickhouse ping failed", "err", err)
 				db.Close()
 				continue
 			}
 
 			db.Close()
-			return dsn, nil
+			return true
 		}
 	}
 }
+
+

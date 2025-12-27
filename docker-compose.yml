@@ -26,3 +26,6 @@ services:
       - "9000:9000"
       - "8123:8123"
     restart: always
+    environment:
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+      CLICKHOUSE_DB: default

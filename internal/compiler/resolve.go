@@ -28,9 +28,17 @@ func (comp *Compiler) resolveCatalogRefs(qc *QueryCatalog, rvs []*ast.RangeVar, 
 	// TODO: Deprecate defaultTable
 	var defaultTable *ast.TableName
 	var tables []*ast.TableName
+	tableSet := map[string]bool{} // Track which tables we've already added to avoid duplicates
 
 	typeMap := map[string]map[string]map[string]*catalog.Column{}
 	indexTable := func(table catalog.Table) error {
+		// Deduplicate tables by schema.name
+		tableKey := table.Rel.Schema + "." + table.Rel.Name
+		if tableSet[tableKey] {
+			return nil // Already indexed this table
+		}
+		tableSet[tableKey] = true
+		
 		tables = append(tables, table.Rel)
 		if defaultTable == nil {
 			defaultTable = table.Rel
