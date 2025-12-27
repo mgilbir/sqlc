@@ -269,6 +269,19 @@ func (c *Compiler) sourceTables(qc *QueryCatalog, node ast.Node) ([]*Table, erro
 	}
 
 	var tables []*Table
+	tableSet := make(map[string]bool) // Track which tables we've already added to avoid duplicates
+	
+	addTable := func(t *Table) {
+		if t == nil {
+			return
+		}
+		tableKey := t.Rel.Schema + "." + t.Rel.Name
+		if !tableSet[tableKey] {
+			tableSet[tableKey] = true
+			tables = append(tables, t)
+		}
+	}
+	
 	for _, item := range list.Items {
 		item := item
 		switch n := item.(type) {
@@ -349,7 +362,7 @@ func (c *Compiler) sourceTables(qc *QueryCatalog, node ast.Node) ([]*Table, erro
 					Name: *n.Alias.Aliasname,
 				}
 			}
-			tables = append(tables, table)
+			addTable(table)
 
 		case *ast.RangeSubselect:
 			cols, err := c.outputColumns(qc, n.Subquery)
@@ -362,7 +375,7 @@ func (c *Compiler) sourceTables(qc *QueryCatalog, node ast.Node) ([]*Table, erro
 				tableName = *n.Alias.Aliasname
 			}
 
-			tables = append(tables, &Table{
+			addTable(&Table{
 				Rel: &ast.TableName{
 					Name: tableName,
 				},
@@ -391,7 +404,7 @@ func (c *Compiler) sourceTables(qc *QueryCatalog, node ast.Node) ([]*Table, erro
 					Name:    *n.Alias.Aliasname,
 				}
 			}
-			tables = append(tables, table)
+			addTable(table)
 
 		default:
 			return nil, fmt.Errorf("sourceTable: unsupported list item type: %T", n)
